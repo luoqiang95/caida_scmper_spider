@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 from io import BytesIO
 from lxml import etree
+from queue import Queue
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
@@ -31,7 +32,7 @@ class ScamperSpider:
         'Upgrade-Insecure-Requests': '1',
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
     }
-    base_path = os.path.dirname(__file__)
+    base_path = os.path.dirname(__file__) + os.sep + "files"
 
     def __init__(self, base_url=None, start_time=None, end_time=None):
         self.base_url = self._base_url if not base_url else base_url
@@ -51,27 +52,63 @@ class ScamperSpider:
         """
         url = _url if _url else self.base_url
         with self.session.get(url, headers=self.base_headers, timeout=5) as se:
-            html = etree.HTML(se.text)
+            html = etree.HTML(se.text, base_url=url)
         if html is not None:
-            a_list = html.xpath("//a/@href")
-            path_suffix = url.replace(self._base_url, '').split("/")[:-1]
-            if path_suffix:
-                path = os.path.join(self.base_path, )
+            self.parse_html(html)
+
+    def parse_html(self, html):
+        a_list = html.xpath("//a/@href")
+        path_suffix = html.base_url.replace(self._base_url, '').split("/")[:-1]
+        self.create_dirs_or_file(path_suffix, a_list[5:])
+
+    def create_dirs_or_file(self, path_suffix, a_list):
+        if path_suffix:
+            current_path_rel = f"{os.sep}".join(path_suffix)
+            path = os.path.join(self.base_path, current_path_rel)
+            if not os.path.exists(path):
+                os.makedirs(path)
+        else:
+            path = self.base_path
+        path_dic = self.pwd(path_suffix)
+        for a_u in a_list:
+            if a_u.endswith("warts.gz"):
+                new_file_path = os.path.join(path, a_u)
+                if not os.path.exists(new_file_path):
+                    os.mknod(new_file_path)
+                    print(f"create new file {new_file_path}")
+                a = path_suffix.copy()
+                a.append(a_u)
+                file_path = self.base_url + "/".join(a)
+                path_dic[a_u] = file_path
+                url = self._base_url + "/".join(path_suffix) + "/"
+                self.input_file_link(a_u, path=file_path, url=url)
             else:
-                path = self.base_path
-            for a_u in a_list[5:]:
                 new_dir = os.path.join(path, a_u)
                 if not os.path.exists(new_dir):
-                    os.makedirs(new_dir)
-                path_dic = self.path_mapper
-                for fix in path_suffix:
-                    dic = path_dic.get(fix)
-                    if dic is None:
-                        path_dic[fix] = {}
-                    else:
-                        path_dic = dic
-                path_dic[path_suffix[-1]] = {}
-            print(self.path_mapper)
+                    os.mkdir(new_dir)
+                    print(f"create new dir {new_dir}")
+                path_dic[a_u] = {}
+
+    def input_file_link(self, filename, **kwargs):
+        if not self.file_mapper.get(filename):
+            self.file_mapper[filename] = kwargs
+        else:
+            self.file_mapper[filename].update(kwargs)
+
+    def pwd(self, path_suffix):
+        """
+        locating the current file should in how path
+        """
+        path_dic = self.path_mapper
+        for fix in path_suffix:
+            dic = path_dic.get(fix)
+            if dic is None:
+                new_dic = {}
+                path_dic[fix] = new_dic
+                path_dic = new_dic
+            else:
+                path_dic = dic
+        return path_dic
 
     def get_file_info(self, url):
         url_split = url.split("/")
@@ -81,8 +118,7 @@ class ScamperSpider:
         with self.session.get(url, headers=self.down_headers, timeout=5) as se:
             if se.status_code == 206:
                 size, modified = self.get_file_size(se)
-                self.file_mapper[filename]["size"] = size
-                self.file_mapper[filename]["modified"] = modified
+                self.input_file_link(filename, size=size, modified=modified)
                 self.df["filename"] = filename
                 self.df[self.df["filename"] == filename]["size"] = size
                 self.df[self.df["filename"] == filename]["modified"] = modified
@@ -143,6 +179,14 @@ class ScamperSpider:
         modified = headers.get("Last-Modified")
         return size, modified
 
+    def main(self):
+        """
+        spider scamper
+        """
+        self.get_html()
 
-s = ScamperSpider(base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2019/")
-s.get_html()
+
+# s = ScamperSpider(base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2019/")
+s = ScamperSpider(
+    base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2019/cycle-20190115/")
+s.main()
