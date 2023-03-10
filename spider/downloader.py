@@ -51,17 +51,25 @@ class ScamperSpider:
         get html source code, use etree parse label
         """
         url = _url if _url else self.base_url
-        with self.session.get(url, headers=self.base_headers, timeout=5) as se:
-            html = etree.HTML(se.text, base_url=url)
-        if html is not None:
-            self.parse_html(html)
+        if url.endswith("warts.gz"):
+            self.get_download_headers(url)
+            if self.get_file_info(url):
+                filename = url.split("/")[-1]
+                v = self.file_mapper.get(filename)
+                _range = f"bytes=0-{v['size']}"
+                self.download_warts_file(url, _range, 0)
+        else:
+            with self.session.get(url, headers=self.base_headers, timeout=5) as se:
+                html = etree.HTML(se.text, base_url=url)
+            if html is not None:
+                self.parse_html(html)
 
     def parse_html(self, html):
         a_list = html.xpath("//a/@href")
-        path_suffix = html.base_url.replace(self._base_url, '').split("/")[:-1]
-        self.create_dirs_or_file(path_suffix, a_list[5:])
+        self.create_dirs_or_file(html.base, a_list[5:])
 
-    def create_dirs_or_file(self, path_suffix, a_list):
+    def create_dirs_or_file(self, url, a_list):
+        path_suffix = url.replace(self._base_url, '').split("/")[:-1]
         if path_suffix:
             current_path_rel = f"{os.sep}".join(path_suffix)
             path = os.path.join(self.base_path, current_path_rel)
@@ -81,7 +89,7 @@ class ScamperSpider:
                 file_path = self.base_url + "/".join(a)
                 path_dic[a_u] = file_path
                 url = self._base_url + "/".join(path_suffix) + "/"
-                self.input_file_link(a_u, path=file_path, url=url)
+                self.input_file_info(a_u, path=file_path, url=url)
             else:
                 new_dir = os.path.join(path, a_u)
                 if not os.path.exists(new_dir):
@@ -89,7 +97,7 @@ class ScamperSpider:
                     print(f"create new dir {new_dir}")
                 path_dic[a_u] = {}
 
-    def input_file_link(self, filename, **kwargs):
+    def input_file_info(self, filename, **kwargs):
         if not self.file_mapper.get(filename):
             self.file_mapper[filename] = kwargs
         else:
@@ -97,47 +105,68 @@ class ScamperSpider:
 
     def pwd(self, path_suffix):
         """
-        locating the current file should in how path
+        locating the current file should in where path mapper
         """
-        path_dic = self.path_mapper
+        path_tree = self.path_mapper
         for fix in path_suffix:
-            dic = path_dic.get(fix)
+            dic = path_tree.get(fix)
             if dic is None:
                 new_dic = {}
-                path_dic[fix] = new_dic
-                path_dic = new_dic
+                path_tree[fix] = new_dic
+                path_tree = new_dic
             else:
-                path_dic = dic
-        return path_dic
+                path_tree = dic
+        return path_tree
 
-    def get_file_info(self, url):
-        url_split = url.split("/")
-        filename = url_split[-1]
-        date = url_split[-2].split("-")[-1]
-        year = url_split[-3]
-        with self.session.get(url, headers=self.down_headers, timeout=5) as se:
-            if se.status_code == 206:
-                size, modified = self.get_file_size(se)
-                self.input_file_link(filename, size=size, modified=modified)
-                self.df["filename"] = filename
-                self.df[self.df["filename"] == filename]["size"] = size
-                self.df[self.df["filename"] == filename]["modified"] = modified
-                self.df[self.df["filename"] == filename]["date"] = date
-                self.df[self.df["filename"] == filename]["year"] = year
-
-    def download_warts_file(self, url, referer, _range=None, number=None):
+    def get_download_headers(self, url, _range=None):
+        filename = url.split("/")[-1]
+        referer = url.replace(filename, '')
         headers = {
             'If-Range': '"18a106b-5d93f69e23de3"',
             'Range': _range if _range else 'bytes=1-1',
             'Referer': referer,
             'Sec-Fetch-Site': 'same-origin',
         }
-
         self.down_headers.update(headers)
+
+    def download_warts_file(self, url, _range=None, number=None):
+        filename = url.split("/")[-1]
         if _range is not None and number is not None:
             with self.session.get(url, headers=self.down_headers, timeout=5) as se:
                 if se.status_code == 206:
                     self.create_file_object(number, se, filename)
+
+    def get_file_info(self, url):
+        filename = url.split("/")[-1]
+        if not url.endswith(".warts.gz"):
+            print("file link error!!!!")
+            return
+        url_split = url.split("/")
+        date = url_split[-2].split("-")[-1]
+        year = url_split[-3]
+        with self.session.get(url, headers=self.down_headers, timeout=5) as se:
+            if 200 <= se.status_code < 300:
+                size, modified = self.get_file_size(se)
+                self.df["filename"] = filename
+                self.df[self.df["filename"] == filename]["size"] = size
+                self.df[self.df["filename"] == filename]["modified"] = modified
+                self.df[self.df["filename"] == filename]["date"] = date
+                self.df[self.df["filename"] == filename]["year"] = year
+                self.df[self.df["filename"] == filename]["url"] = url
+                if se.headers.get("Content-Range") is not None:
+                    self.input_file_info(filename, size=size, modified=modified)
+                    return True
+                path_suffix = url.replace(self._base_url, '').split("/")
+                path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
+                self.df[self.df["filename"] == filename]["path"] = path
+                print(f"save file in path {path}")
+                if os.path.exists(path):
+                    with open(path, "ab") as fd:
+                        fd.write(se.content)
+                else:
+                    with open(path, "wb") as fd:
+                        fd.write(se.content)
+        return False
 
     def create_file_object(self, number, session, filename):
         """
@@ -145,6 +174,7 @@ class ScamperSpider:
         """
         file = BytesIO()
         for content in session.iter_content(1024 * 30):
+            print("downloading....")
             file.write(content)
         if self.file_mapper.get(filename):
             if not self.file_mapper[filename].get("file"):
@@ -175,7 +205,8 @@ class ScamperSpider:
         get file size
         """
         headers = response.headers
-        size = headers.get("Content-Range")
+        e_tag = headers.get("ETag").replace('"', '')
+        size = int("0x" + e_tag.split("-")[0], 16)
         modified = headers.get("Last-Modified")
         return size, modified
 
@@ -184,9 +215,13 @@ class ScamperSpider:
         spider scamper
         """
         self.get_html()
+        for k, v in self.file_mapper.items():
+            _range = f"bytes=0-{v['size']}"
+            self.download_warts_file(v["url"], _range, 0)
+        print(self.file_mapper)
 
 
 # s = ScamperSpider(base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2019/")
 s = ScamperSpider(
-    base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2019/cycle-20190115/")
+    base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2022/cycle-20220302/abz2-uk.team-probing.c009902.20220302.warts.gz")
 s.main()
