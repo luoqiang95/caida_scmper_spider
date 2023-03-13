@@ -3,9 +3,8 @@
 # data:  10:40 AM
 # file: mtest.py
 import os
+import pandas as pd
+import numpy as np
 
-print(os.path.dirname(__file__))
-base = "https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/"
-a =    "https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2022/"
-print(a.replace(base, ''))
-print(int("0x1c55fd0",16))
+t = pd.date_range('20070913','20071201')
+print('20070918' in t)
