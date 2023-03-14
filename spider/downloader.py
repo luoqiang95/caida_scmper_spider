@@ -3,13 +3,14 @@
 # data:  下午4:34
 # file: downloader.py
 import os
+import threading
+
 import requests
 import pandas as pd
 from io import BytesIO
 from lxml import etree
-from queue import Queue
+from queue import Queue, Empty
 from logger import logger
-from threading import Thread
 from datetime import datetime
 from db_operation import conn
 from concurrent.futures import ThreadPoolExecutor
@@ -49,15 +50,28 @@ class ScamperSpider:
         self.queue = Queue()
         self.queue.put((base_url, None))
 
-    def get_html(self, _url=None, header=None):
+    def spider_all_dirs(self):
+        """
+
+        """
+        n = 0
+        while True:
+            if n == 5:
+                break
+            try:
+                url = self.queue.get(timeout=5)
+                self.get_html(url)
+            except Empty as t:
+                logger.error(msg="cant got any link!")
+                n += 1
+
+    def get_html(self, _url=None):
         """
         get html source code, use etree parse label
         """
-        url = _url[0]
+        url, _range = _url
         if url.endswith("warts.gz"):
-            print(url)
-            self.get_download_headers(url, _url[1])
-            self.get_file_info(url)
+            self.get_file_info(url, _range)
         else:
             try:
                 with self.session.get(url, headers=self.base_headers, timeout=5) as se:
@@ -94,12 +108,6 @@ class ScamperSpider:
             new_url = url + a_u
             self.queue.put((new_url, None))
 
-    def input_file_info(self, filename, **kwargs):
-        if not self.file_mapper.get(filename):
-            self.file_mapper[filename] = kwargs
-        else:
-            self.file_mapper[filename].update(kwargs)
-
     def get_download_headers(self, url, _range=None):
         filename = url.split("/")[-1]
         referer = url.replace(filename, '')
@@ -110,117 +118,83 @@ class ScamperSpider:
             'Sec-Fetch-Site': 'same-origin',
         }
         self.down_headers.update(headers)
+        return self.down_headers.copy()
 
-    def download_warts_file(self, url, _range=None):
-        filename = url.split("/")[-1]
-        if _range is not None:
-            with self.session.get(url, headers=self.down_headers, timeout=5) as se:
-                if se.status_code == 206:
-                    self.create_file_object(_range, se, filename)
-
-    def get_file_info(self, url):
-        filename = url.split("/")[-1]
+    def get_file_info(self, url, _range=None):
         if not url.endswith(".warts.gz"):
             print("file link error!!!!")
             return
+        path_suffix = url.replace(self._base_url, '').split("/")
+        path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
         url_split = url.split("/")
+        filename = url_split[-1]
         date = url_split[-2].split("-")[-1]
         if self.date_range and date not in self.date_range:
             return
+        self.save_file_info(url)
+        self.file_mapper[filename] = {"path": path, "file": []}
+        if _range is None:
+            try:
+                with self.session.get(url, headers=self.base_headers, timeout=5) as se:
+                    if 200 <= se.status_code < 300:
+                        size, modified = self.get_file_size(se)
+                        self.df.loc[self.df.filename == filename, "size"] = size
+                        self.df.loc[self.df.filename == filename, "modified"] = modified
+                        if se.headers.get("Content-Range") is not None:
+                            capital = size // self.cpu_count
+                            for i in range(self.cpu_count):
+                                if i == self.cpu_count - 1:
+                                    _range = f"bytes={i * capital}-{size}"
+                                else:
+                                    _range = f"bytes={i * capital}-{(i + 1) * capital - 1}"
+                                self.queue.put((url, _range))
+                            return
+                        self.create_file_object(se, filename, _range)
+            except Exception as e:
+                logger.error(msg=f"download {filename} error!!")
+                logger.error(msg=f"{filename} url: {url}")
+                logger.error(msg=f"{str(e)}")
+        else:
+            self.download_warts_file(url, _range)
+
+    def save_file_info(self, url):
+        url_split = url.split("/")
+        filename = url_split[-1]
+        date = url_split[-2].split("-")[-1]
         year = url_split[-3]
+        path_suffix = url.replace(self._base_url, '').split("/")
+        path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
         file_info_df = pd.DataFrame({
             "filename": filename,
             "date": date,
             "year": year,
             "url": url,
             "down_time": datetime.now(),
-            # "now_size": 0,
-            # "over": 0
+            "path": path
         }, index=[0])
-        try:
-            with self.session.get(url, headers=self.down_headers, timeout=5) as se:
-                if 200 <= se.status_code < 300:
-                    size, modified = self.get_file_size(se)
-                    logger.debug(msg=file_info_df)
-                    if self.df[self.df.filename == filename].empty:
-                        file_info_df["size"] = size
-                        self.df = pd.concat([self.df, file_info_df], ignore_index=True)
-                    else:
-                        self.df.loc[self.df.filename == filename, "size"] = size
-                        self.df.loc[self.df.filename == filename, "modified"] = modified
-                        self.df.loc[self.df.filename == filename, "date"] = date
-                        self.df.loc[self.df.filename == filename, "year"] = year
-                        self.df.loc[self.df.filename == filename, "url"] = url
-                        self.df.loc[self.df.filename == filename, "down_time"] = datetime.now()
-                    if se.headers.get("Content-Range") is not None:
-                        # self.input_file_info(filename, size=size, modified=modified, url=url)
-                        capital = size // self.cpu_count
-                        for i in range(self.cpu_count):
-                            if i == self.cpu_count - 1:
-                                _range = f"bytes={i * capital}-{(i + 1) * capital}"
-                            else:
-                                _range = f"bytes={capital * self.cpu_count - 1}-{size - capital * self.cpu_count}"
-                            self.queue.put((url, _range))
-                        return
-                    path_suffix = url.replace(self._base_url, '').split("/")
-                    path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
-                    self.df.loc[self.df.filename == filename, "path"] = path
-                    logger.info(msg=f"save file in path {path}")
-                    if os.path.exists(path):
-                        with open(path, "ab") as fd:
-                            fd.write(se.content)
-                    else:
-                        with open(path, "wb") as fd:
-                            fd.write(se.content)
-                    self.df.loc[self.df.filename == filename, "now_size"] = size
-                    self.df.loc[self.df.filename == filename, "over"] = 1
-        except Exception as e:
+        if self.df[self.df.filename == filename].empty:
             self.df = pd.concat([self.df, file_info_df], ignore_index=True)
-            logger.error(msg=f"download {filename} error!!")
-            logger.error(msg=f"{filename} url: {url}")
-            logger.error(msg=f"{str(e)}")
+        self.df.loc[self.df.filename == filename, "date"] = date
+        self.df.loc[self.df.filename == filename, "year"] = year
+        self.df.loc[self.df.filename == filename, "url"] = url
+        self.df.loc[self.df.filename == filename, "down_time"] = datetime.now()
+        self.df.loc[self.df.filename == filename, "path"] = path
 
-    def create_file_object(self, number, session, filename):
+    def download_warts_file(self, url, _range):
+        filename = url.split("/")[-1]
+        headers = self.get_download_headers(url, _range)
+        with self.session.get(url, headers=headers, timeout=5) as se:
+            if se.status_code == 206:
+                self.create_file_object(se, filename, _range)
+
+    def create_file_object(self, session, filename, _range):
         """
         create file object
         """
         file = BytesIO()
-        # for content in session.iter_content(1024 * 30):
-        #     print("downloading....")
         file.write(session.content)
-        logger.info(msg=f"{filename} size: {file.__sizeof__()}")
-        if self.file_mapper.get(filename):
-            if not self.file_mapper.get(filename):
-                self.file_mapper[filename] = [(number, file)]
-            else:
-                self.file_mapper[filename].append((number, file))
-
-    def spider_all_dirs(self):
-        """
-
-        """
-        while True:
-            if not self.queue.empty():
-                url = self.queue.get()
-                self.get_html(url)
-
-    def save_warts_file(self):
-        """
-        save warts file
-        """
-        for filename, file_info in self.file_mapper.items():
-            file_path = file_info.get("path")
-            if not os.path.exists(file_path):
-                fd = open(file_path, "wb")
-            else:
-                fd = open(file_path, "ab")
-            files = sorted(file_info.get("file"), key=lambda x: x[0])
-            now_size = 0
-            for file in files:
-                fd.write(file.read())
-                now_size += file.__sizeof__()
-            fd.close()
-            self.file_mapper[filename]["now_size"] = now_size
+        logger.info(msg=f"{filename} number {_range} downloaded")
+        self.file_mapper[filename]["file"].append((_range, file))
 
     def get_file_size(self, response):
         """
@@ -232,13 +206,25 @@ class ScamperSpider:
         modified = headers.get("Last-Modified")
         return size, modified
 
+    def concat_file_obj(self):
+        for filename, obj in self.file_mapper.items():
+            file_objs = obj["file"]
+            objs = sorted(file_objs, key=lambda x: int(x[0].split("-")[-1]))
+            path = obj["path"]
+            with open(path, "wb") as fd:
+                for obj_ in objs:
+                    fd.write(obj_[1].read())
+                    self.df.loc[self.df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
+            self.df.loc[self.df.filename == filename, "over"] = 1
+            logger.info(msg=f"save file in path {path}")
+
     def main(self):
         """
         spider scamper
         """
-        for i in range(self.cpu_count):
-            self.pool.map(self.spider_all_dirs)
-        # self.spider_all_dirs()
+        # for i in range(self.cpu_count):
+        #     self.pool.map(self.spider_all_dirs)
+        self.spider_all_dirs()
         print(self.file_mapper)
         print(self.df)
         if not self.df.empty:
