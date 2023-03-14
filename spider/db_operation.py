@@ -5,6 +5,10 @@
 import pymysql
 
 mysql_config = {
-
+    "user": "root",
+    "password": "mininet",
+    "host": "192.168.60.137",
+    "database": "ty",
+    "port": 3306
 }
 conn = pymysql.Connection(**mysql_config)

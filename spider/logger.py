@@ -8,12 +8,15 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 log_path = os.path.join(os.path.dirname(__file__), "log")
-filename = f"{datetime.date}.log"
-log_format = "%(asctime) %(name)-12s %(levelname)-8s %(message)s"
+filename = os.path.join(log_path, "spider.log")
+log_format = "%(asctime)s %(name)s %(levelname)s %(message)s"
 logging.basicConfig(filename=filename, format=log_format, datefmt="%m-%d %H:%M", level=logging.DEBUG)
-console = TimedRotatingFileHandler(filename, when='D', interval=1)
-console.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
-console.setFormatter(formatter)
-logging.getLogger('').addHandler(console)
+file_handler = TimedRotatingFileHandler(filename, when='D', interval=1)
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(name)s: %(levelname)s %(message)s')
+file_handler.setFormatter(formatter)
+logging.getLogger('').addHandler(file_handler)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logging.getLogger('').addHandler(console_handler)
 logger = logging.getLogger('')
