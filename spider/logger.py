@@ -8,6 +8,8 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 log_path = os.path.join(os.path.dirname(__file__), "log")
+if not os.path.exists(log_path):
+    os.mkdir(log_path)
 filename = os.path.join(log_path, "spider.log")
 log_format = "%(asctime)s %(name)s %(levelname)s %(message)s"
 logging.basicConfig(filename=filename, format=log_format, datefmt="%m-%d %H:%M", level=logging.DEBUG)

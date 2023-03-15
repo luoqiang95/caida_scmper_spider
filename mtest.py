@@ -2,6 +2,7 @@
 # Author: lq
 # data:  10:40 AM
 # file: mtest.py
+# 8.62/11.73
 import os
 import time
 import pandas as pd
@@ -21,20 +22,8 @@ def spider(number):
 
 
 t = time.perf_counter()
-for i in range(os.cpu_count()):
+for i in range(os.cpu_count() + 5):
     pool.map(spider, (i,))
 print(time.perf_counter() - t)
 # 0.005735908052884042
 # 10.797772324993275
-size = 22660710
-capital = size // os.cpu_count()
-b_l = []
-for i in range(os.cpu_count()):
-    if i == os.cpu_count() - 1:
-        b_l.append(f"bytes{i * capital}-{size}")
-    else:
-        b_l.append(f"bytes{i * capital}-{(i + 1) * capital - 1}")
-# print(b_l)
-b_l = ['bytes5665177-11330353', 'bytes0-5665176', 'bytes16995531-22660710', 'bytes11330354-16995530']
-a = sorted(b_l, key=lambda x: int(x.split("-")[-1]))
-print(a[-1])
