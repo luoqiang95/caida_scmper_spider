@@ -67,7 +67,6 @@ class ScamperSpider:
     @staticmethod
     def ctrl_c(signum, frame):
         if not df.empty:
-            print("exit look:", df)
             df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
         sys.stderr.write("\r\nfinish spider!!")
         sys.exit(0)
@@ -147,7 +146,7 @@ class ScamperSpider:
 
     def get_file_info(self, url, _range=None):
         if not url.endswith(".warts.gz"):
-            print("file link error!!!!")
+            self.logger.info("file link error!!!!")
             return
         path_suffix = url.replace(self._base_url, '').split("/")
         path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
@@ -175,7 +174,6 @@ class ScamperSpider:
                                     else:
                                         _range = f"bytes={i * capital}-{(i + 1) * capital - 1}"
                                     queue.put((url, _range))
-                                    print(f"---------queue put {(url, _range)}")
                                 return
                             self.create_file_object(se, filename, _range)
                     break
@@ -242,8 +240,6 @@ class ScamperSpider:
         file.write(session.content)
         self.logger.info(msg=f"{filename} number {_range} downloaded")
         self.file_mapper[filename]["file"].append((_range, file))
-        print(f"create file success!! ,{_range} {file.__sizeof__()}")
-        print(self.file_mapper[filename])
         self.concat_file_obj(filename)
 
     def get_file_size(self, response):
@@ -257,8 +253,8 @@ class ScamperSpider:
         return size, modified
 
     def parse_time(self, date: str):
-        a = date.replace(",", '')
-        formatter = "%a %d %d %Y %H:%M:%S"
+        a = date.replace(",", '').replace(" GMT", '')
+        formatter = "%a %d %b %Y %H:%M:%S"
         return datetime.strptime(a, formatter)
 
     def concat_file_obj(self, filename):
@@ -272,7 +268,6 @@ class ScamperSpider:
                     df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
             df.loc[df.filename == filename, "over"] = 1
             self.logger.info(msg=f"save file in path {path}")
-            print("+" * 5)
 
     def main(self):
         """
@@ -282,7 +277,6 @@ class ScamperSpider:
         for i in range(cpu_count):
             pool.submit(self.spider_all_dirs)
         if not df.empty:
-            print("look:", df)
             df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
 
 
@@ -296,7 +290,7 @@ def main(base_url=None):
     parser.add_argument("-s", dest="start_time", help="date time, like:20220301", type=str, default=None)
     parser.add_argument("-e", dest="end_time", help="end time, like:20220302", type=str, default=None)
     args = parser.parse_args()
-    # s = ScamperSpider(base_path=args.save_path, log_path=args.log_path, base_url=args.link, start_time=args.start_time,
-    #                   end_time=args.end_time)
-    s = ScamperSpider(base_url=base_url)
+    s = ScamperSpider(base_path=args.save_path, log_path=args.log_path, base_url=args.link, start_time=args.start_time,
+                      end_time=args.end_time)
+    # s = ScamperSpider(base_url=base_url)
     s.main()
