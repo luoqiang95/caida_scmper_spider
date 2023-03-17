@@ -3,26 +3,35 @@
 # data:  下午4:34
 # file: downloader.py
 import os
+import signal
 import argparse
-from time import sleep
+import sys
 
 import requests
 import pandas as pd
 from io import BytesIO
 from lxml import etree
-from queue import Queue, Empty
-from logger import logger
+from queue import Queue
+from logger import init_logger
 from datetime import datetime
-from db_operation import conn
+from db_operation import create_engine
 from concurrent.futures import ThreadPoolExecutor
+
+table_name = "caida_file"
+table_columns = ["filename", "year", "date", "down_time", "size", "path", "now_size", "over", "url", "modified"]
+df = pd.DataFrame(
+    columns=table_columns)
+engine, conn = create_engine()
+queue = Queue()
+cpu_count = os.cpu_count()
+pool = ThreadPoolExecutor(max_workers=cpu_count)
 
 
 class ScamperSpider:
     try_count = 5
-    table_name = "caida_file"
+
     _base_url = "https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/"
-    cpu_count = os.cpu_count()
-    table_columns = ["filename", "year", "date", "down_time", "size", "path", "now_size", "over", "url", "modified"]
+
     base_headers = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -40,21 +49,28 @@ class ScamperSpider:
     }
     __base_path = os.path.dirname(__file__) + os.sep + "files"
 
-    def __init__(self, base_path=None, base_url=None, start_time=None, end_time=None):
+    def __init__(self, base_path=None, log_path=None, base_url=None, start_time=None, end_time=None):
         self.base_url = self._base_url if not base_url else base_url
         self.down_headers = self.base_headers.copy()
         self.session = requests.session()
         self.file_mapper = dict()  # {"filename":[file_obj,file_obj]}
-        self.df = pd.DataFrame(
-            columns=self.table_columns)
         self.date_range = pd.date_range(start_time, end_time) if start_time and end_time else None
         self.base_path = base_path if base_path else self.__base_path
-        self.pool = ThreadPoolExecutor(max_workers=self.cpu_count)
-        self.queue = Queue()
-        self.queue.put((self.base_url, None))
+        queue.put((self.base_url, None))
         if not os.path.exists(self.__base_path):
             os.mkdir(self.__base_path)
         self.record = None
+        self.logger = init_logger(log_path)
+
+        signal.signal(signal.SIGINT, ScamperSpider.ctrl_c)
+
+    @staticmethod
+    def ctrl_c(signum, frame):
+        if not df.empty:
+            print("exit look:", df)
+            df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
+        sys.stderr.write("\r\nfinish spider!!")
+        sys.exit(0)
 
     def spider_all_dirs(self):
         """
@@ -63,14 +79,12 @@ class ScamperSpider:
         n = 0
         while True:
             if n == 5:
-                print("break!!!!")
                 break
             try:
-                url = self.queue.get(timeout=5)
+                url = queue.get(timeout=5)
                 self.get_html(url)
-            except Empty as t:
-                logger.error(msg="cant got any link!")
-                print("cant got any link!")
+            except Exception as t:
+                self.logger.error(msg="cant got any link!")
                 n += 1
 
     def get_html(self, _url=None):
@@ -79,7 +93,9 @@ class ScamperSpider:
         """
         url, _range = _url
         if url.endswith("warts.gz"):
-            self.get_file_info(url, _range)
+            file_df = self.record[self.record.url == url]
+            if file_df.empty or not file_df.over.values[0]:
+                self.get_file_info(url, _range)
         else:
             for i in range(self.try_count):
                 try:
@@ -87,9 +103,10 @@ class ScamperSpider:
                         html = etree.HTML(se.text, base_url=url)
                     if html is not None:
                         self.parse_html(html)
+                    return
                 except Exception as e:
-                    logger.error(msg=f"error! {_url}:")
-                    logger.error(msg=f"    {str(e)}")
+                    self.logger.error(msg=f"error! {_url}:")
+                    self.logger.error(msg=f"    {str(e)}")
 
     def parse_html(self, html):
         a_list = html.xpath("//a/@href")
@@ -106,17 +123,16 @@ class ScamperSpider:
             path = self.base_path
         for a_u in a_list:
             new_dir = os.path.join(path, a_u)
-
             if not os.path.exists(new_dir):
                 if a_u.endswith("warts.gz"):
                     os.mknod(new_dir)
-                    logger.info(msg=f"create new file {new_dir}")
+                    self.logger.info(msg=f"create new file {new_dir}")
                 else:
                     os.mkdir(new_dir)
-                    logger.info(msg=f"create new dir {new_dir}")
+                    self.logger.info(msg=f"create new dir {new_dir}")
             new_url = url + a_u
-            print("get new url: ", new_url)
-            self.queue.put((new_url, None))
+            queue.put((new_url, None))
+            print(f"++++queue put {(new_url, None)}")
 
     def get_download_headers(self, url, _range=None):
         filename = url.split("/")[-1]
@@ -134,9 +150,6 @@ class ScamperSpider:
         if not url.endswith(".warts.gz"):
             print("file link error!!!!")
             return
-        file_df = self.record[self.record.url == url]
-        if not file_df.empty:
-            return
         path_suffix = url.replace(self._base_url, '').split("/")
         path = os.path.join(self.base_path, f'{os.sep}'.join(path_suffix))
         url_split = url.split("/")
@@ -147,31 +160,35 @@ class ScamperSpider:
         self.save_file_info(url)
         self.file_mapper[filename] = {"path": path, "file": []}
         if _range is None:
+            headers = self.get_download_headers(url, _range)
             for i in range(self.try_count):
                 try:
-                    with self.session.get(url, headers=self.base_headers, timeout=5) as se:
+                    with self.session.get(url, headers=headers, timeout=5) as se:
                         if 200 <= se.status_code < 300:
                             size, modified = self.get_file_size(se)
-                            self.df.loc[self.df.filename == filename, "size"] = size
-                            self.df.loc[self.df.filename == filename, "modified"] = modified
+                            df.loc[df.filename == filename, "size"] = size
+                            df.loc[df.filename == filename, "modified"] = modified
                             if se.headers.get("Content-Range") is not None:
-                                capital = size // self.cpu_count
-                                for i in range(self.cpu_count):
-                                    if i == self.cpu_count - 1:
+                                capital = size // cpu_count
+                                for i in range(cpu_count):
+                                    if i == cpu_count - 1:
                                         _range = f"bytes={i * capital}-{size}"
                                     else:
                                         _range = f"bytes={i * capital}-{(i + 1) * capital - 1}"
-                                    self.queue.put((url, _range))
+                                    queue.put((url, _range))
+                                    print(f"---------queue put {(url, _range)}")
                                 return
                             self.create_file_object(se, filename, _range)
+                    return
                 except Exception as e:
-                    logger.error(msg=f"download {filename} error!!")
-                    logger.error(msg=f"{filename} url: {url}")
-                    logger.error(msg=f"{str(e)}")
+                    self.logger.error(msg=f"download {filename} error!!")
+                    self.logger.error(msg=f"{filename} url: {url}")
+                    self.logger.error(msg=f"{str(e)}")
         else:
             self.download_warts_file(url, _range)
 
     def save_file_info(self, url):
+        global df
         url_split = url.split("/")
         filename = url_split[-1]
         date = url_split[-2].split("-")[-1]
@@ -184,15 +201,17 @@ class ScamperSpider:
             "year": year,
             "url": url,
             "down_time": datetime.now(),
-            "path": path
+            "path": path,
+            "over": 0
         }, index=[0])
-        if self.df[self.df.filename == filename].empty:
-            self.df = pd.concat([self.df, file_info_df], ignore_index=True)
-        self.df.loc[self.df.filename == filename, "date"] = date
-        self.df.loc[self.df.filename == filename, "year"] = year
-        self.df.loc[self.df.filename == filename, "url"] = url
-        self.df.loc[self.df.filename == filename, "down_time"] = datetime.now()
-        self.df.loc[self.df.filename == filename, "path"] = path
+        if df[df.filename == filename].empty:
+            df = pd.concat([df, file_info_df], ignore_index=True)
+        else:
+            df.loc[df.filename == filename, "date"] = date
+            df.loc[df.filename == filename, "year"] = year
+            df.loc[df.filename == filename, "url"] = url
+            df.loc[df.filename == filename, "down_time"] = datetime.now()
+            df.loc[df.filename == filename, "path"] = path
 
     def download_warts_file(self, url, _range):
         filename = url.split("/")[-1]
@@ -203,15 +222,17 @@ class ScamperSpider:
                     if se.status_code == 206:
                         se = se
                 self.create_file_object(se, filename, _range)
+                return
             except Exception as e:
-                logger.error(msg=f"method download_warts_file error!!")
-                logger.error(msg=f"download {filename} error!!")
-                logger.error(msg=f"{filename} url: {url}")
-                logger.error(msg=f"{str(e)}")
+                self.logger.error(msg=f"method download_warts_file error!!")
+                self.logger.error(msg=f"download {filename} error!!")
+                self.logger.error(msg=f"{filename} url: {url}")
+                self.logger.error(msg=f"{str(e)}")
 
     def get_download_record(self):
-        sql = f"SELECT {','.join(self.table_columns)} from {self.table_name};"
+        sql = f"SELECT {','.join(table_columns)} from {table_name};"
         record = pd.read_sql(sql, conn)
+        conn.close()
         return record
 
     def create_file_object(self, session, filename, _range):
@@ -220,8 +241,9 @@ class ScamperSpider:
         """
         file = BytesIO()
         file.write(session.content)
-        logger.info(msg=f"{filename} number {_range} downloaded")
+        self.logger.info(msg=f"{filename} number {_range} downloaded")
         self.file_mapper[filename]["file"].append((_range, file))
+        self.concat_file_obj(filename)
 
     def get_file_size(self, response):
         """
@@ -233,46 +255,45 @@ class ScamperSpider:
         modified = headers.get("Last-Modified")
         return size, modified
 
-    def concat_file_obj(self):
-        for filename, obj in self.file_mapper.items():
-            file_objs = obj["file"]
-            objs = sorted(file_objs, key=lambda x: int(x[0].split("-")[-1]))
-            path = obj["path"]
+    def concat_file_obj(self, filename):
+        files = self.file_mapper["file"]
+        if len(files) >= cpu_count:
+            objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]))
+            path = self.file_mapper[filename]["path"]
+            sizes = []
             with open(path, "wb") as fd:
                 for obj_ in objs:
-                    fd.write(obj_[1].read())
-                    self.df.loc[self.df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
-            self.df.loc[self.df.filename == filename, "over"] = 1
-            logger.info(msg=f"save file in path {path}")
+                    if obj_[0] not in sizes:
+                        sizes.append(obj_[0])
+                        fd.write(obj_[1].read())
+                        df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
+            df.loc[df.filename == filename, "over"] = 1
+            self.logger.info(msg=f"save file in path {path}")
+            print("+" * 5)
 
     def main(self):
         """
         spider scamper
         """
         self.record = self.get_download_record()
-        for i in range(self.cpu_count):
-            self.pool.submit(self.spider_all_dirs)
-        # self.spider_all_dirs()
-        if not self.df.empty:
-            self.df.to_sql(self.table_name, conn, index=False, if_exists="append")
+        for i in range(cpu_count):
+            pool.submit(self.spider_all_dirs)
+        if not df.empty:
+            print("look:", df)
+            df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
 
 
-def main():
-    # base_url = "https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2022/cycle-20220302/"
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("-p", dest="save_path", help="warts file save path, default pwd path", type=str, default=None)
-    # parser.add_argument("-l", dest="link",
-    #                     help="download url, default url: https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/",
-    #                     type=str, default=None)
-    # parser.add_argument("-s", dest="start_time", help="date time, like:20220301", type=str, default=None)
-    # parser.add_argument("-e", dest="end_time", help="end time, like:20220302", type=str, default=None)
-    # args = parser.parse_args()
-
-    # s = ScamperSpider(base_path=args.save_path, base_url=args.link, start_time=args.start_time, end_time=args.end_time)
-    s = ScamperSpider(
-        base_url="https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/2022/cycle-20220302/")
+def main(base_url=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", dest="save_path", help="warts file save path, default pwd path", type=str, default=None)
+    parser.add_argument("-lp", dest="log_path", help="log file save path, default pwd path", type=str, default=None)
+    parser.add_argument("-l", dest="link",
+                        help="download url, default url: https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/",
+                        type=str, default=None)
+    parser.add_argument("-s", dest="start_time", help="date time, like:20220301", type=str, default=None)
+    parser.add_argument("-e", dest="end_time", help="end time, like:20220302", type=str, default=None)
+    args = parser.parse_args()
+    # s = ScamperSpider(base_path=args.save_path, log_path=args.log_path, base_url=args.link, start_time=args.start_time,
+    #                   end_time=args.end_time)
+    s = ScamperSpider(base_url=base_url)
     s.main()
-
-
-if __name__ == '__main__':
-    main()
