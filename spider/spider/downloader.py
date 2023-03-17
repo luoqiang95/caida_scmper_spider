@@ -164,6 +164,7 @@ class ScamperSpider:
                     with self.session.get(url, headers=headers, timeout=5) as se:
                         if 200 <= se.status_code < 300:
                             size, modified = self.get_file_size(se)
+                            self.file_mapper[filename]["size"] = size
                             df.loc[df.filename == filename, "size"] = size
                             df.loc[df.filename == filename, "modified"] = modified
                             if se.headers.get("Content-Range") is not None:
@@ -242,6 +243,17 @@ class ScamperSpider:
         self.file_mapper[filename]["file"].append((_range, file))
         self.concat_file_obj(filename)
 
+    def parse_time(self, date: str):
+        a = date.replace(",", '').replace(" GMT", '')
+        formatter = "%a %d %b %Y %H:%M:%S"
+        return datetime.strptime(a, formatter)
+
+    def total_files_size(self, files):
+        total = 0
+        for file in files:
+            total += file[1].__sizeof__()
+        return total
+
     def get_file_size(self, response):
         """
         get file size
@@ -252,14 +264,10 @@ class ScamperSpider:
         modified = self.parse_time(headers.get("Last-Modified"))
         return size, modified
 
-    def parse_time(self, date: str):
-        a = date.replace(",", '').replace(" GMT", '')
-        formatter = "%a %d %b %Y %H:%M:%S"
-        return datetime.strptime(a, formatter)
-
     def concat_file_obj(self, filename):
         files = self.file_mapper[filename]["file"]
-        if len(files) >= cpu_count:
+        files_sizes = self.total_files_size(files)
+        if files_sizes == self.file_mapper[filename]["size"]:
             objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]))
             path = self.file_mapper[filename]["path"]
             with open(path, "wb") as fd:
