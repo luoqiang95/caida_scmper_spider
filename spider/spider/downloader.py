@@ -28,7 +28,7 @@ pool = ThreadPoolExecutor(max_workers=cpu_count)
 
 
 class ScamperSpider:
-    try_count = 5
+    try_count = 10
 
     _base_url = "https://publicdata.caida.org/datasets/topology/ark/ipv4/probe-data/team-1/"
 
@@ -103,7 +103,7 @@ class ScamperSpider:
                         html = etree.HTML(se.text, base_url=url)
                     if html is not None:
                         self.parse_html(html)
-                    return
+                    break
                 except Exception as e:
                     self.logger.error(msg=f"error! {_url}:")
                     self.logger.error(msg=f"    {str(e)}")
@@ -132,7 +132,6 @@ class ScamperSpider:
                     self.logger.info(msg=f"create new dir {new_dir}")
             new_url = url + a_u
             queue.put((new_url, None))
-            print(f"++++queue put {(new_url, None)}")
 
     def get_download_headers(self, url, _range=None):
         filename = url.split("/")[-1]
@@ -179,7 +178,7 @@ class ScamperSpider:
                                     print(f"---------queue put {(url, _range)}")
                                 return
                             self.create_file_object(se, filename, _range)
-                    return
+                    break
                 except Exception as e:
                     self.logger.error(msg=f"download {filename} error!!")
                     self.logger.error(msg=f"{filename} url: {url}")
@@ -222,7 +221,7 @@ class ScamperSpider:
                     if se.status_code == 206:
                         se = se
                 self.create_file_object(se, filename, _range)
-                return
+                break
             except Exception as e:
                 self.logger.error(msg=f"method download_warts_file error!!")
                 self.logger.error(msg=f"download {filename} error!!")
@@ -243,6 +242,8 @@ class ScamperSpider:
         file.write(session.content)
         self.logger.info(msg=f"{filename} number {_range} downloaded")
         self.file_mapper[filename]["file"].append((_range, file))
+        print(f"create file success!! ,{_range} {file.__sizeof__()}")
+        print(self.file_mapper[filename])
         self.concat_file_obj(filename)
 
     def get_file_size(self, response):
@@ -252,21 +253,23 @@ class ScamperSpider:
         headers = response.headers
         e_tag = headers.get("ETag").replace('"', '')
         size = int("0x" + e_tag.split("-")[0], 16)
-        modified = headers.get("Last-Modified")
+        modified = self.parse_time(headers.get("Last-Modified"))
         return size, modified
 
+    def parse_time(self, date: str):
+        a = date.replace(",", '')
+        formatter = "%a %d %d %Y %H:%M:%S"
+        return datetime.strptime(a, formatter)
+
     def concat_file_obj(self, filename):
-        files = self.file_mapper["file"]
+        files = self.file_mapper[filename]["file"]
         if len(files) >= cpu_count:
             objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]))
             path = self.file_mapper[filename]["path"]
-            sizes = []
             with open(path, "wb") as fd:
                 for obj_ in objs:
-                    if obj_[0] not in sizes:
-                        sizes.append(obj_[0])
-                        fd.write(obj_[1].read())
-                        df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
+                    fd.write(obj_[1].getvalue())
+                    df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
             df.loc[df.filename == filename, "over"] = 1
             self.logger.info(msg=f"save file in path {path}")
             print("+" * 5)
