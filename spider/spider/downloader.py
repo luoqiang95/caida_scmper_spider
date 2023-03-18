@@ -268,7 +268,8 @@ class ScamperSpider:
         files = self.file_mapper[filename]["file"]
         files_sizes = self.total_files_size(files)
         if files_sizes == self.file_mapper[filename]["size"]:
-            objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]))
+
+            objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]) if x[0] else -1)
             path = self.file_mapper[filename]["path"]
             with open(path, "wb") as fd:
                 for obj_ in objs:
