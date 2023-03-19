@@ -274,7 +274,8 @@ class ScamperSpider:
             with open(path, "wb") as fd:
                 for obj_ in objs:
                     fd.write(obj_[1].getvalue())
-                    df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1])
+                    df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1]) if obj_[0] else obj_[
+                        1].__sizeof__()
             df.loc[df.filename == filename, "over"] = 1
             self.logger.info(msg=f"save file in path {path}")
 
