@@ -111,7 +111,7 @@ class ScamperSpider:
         a_list = html.xpath("//a/@href")
         self.create_dirs_or_file(html.base, a_list[5:])
 
-    def create_dirs_or_file(self, url, a_list):
+    def create_dirs_or_file(self, url, a_list, put=True):
         path_suffix = url.replace(self._base_url, '').split("/")[:-1]
         if path_suffix:
             current_path_rel = f"{os.sep}".join(path_suffix)
@@ -129,8 +129,9 @@ class ScamperSpider:
                 else:
                     os.mkdir(new_dir)
                     self.logger.info(msg=f"create new dir {new_dir}")
-            new_url = url + a_u
-            queue.put((new_url, None))
+            if put:
+                new_url = url + a_u
+                queue.put((new_url, None))
 
     def get_download_headers(self, url, _range=None):
         filename = url.split("/")[-1]
@@ -163,6 +164,7 @@ class ScamperSpider:
                 try:
                     with self.session.get(url, headers=headers, timeout=5) as se:
                         if 200 <= se.status_code < 300:
+                            self.create_dirs_or_file(url, [filename],False)
                             size, modified = self.get_file_size(se)
                             self.file_mapper[filename]["size"] = size
                             df.loc[df.filename == filename, "size"] = size
@@ -248,12 +250,6 @@ class ScamperSpider:
         formatter = "%a %d %b %Y %H:%M:%S"
         return datetime.strptime(a, formatter)
 
-    def total_files_size(self, files):
-        total = 0
-        for file in files:
-            total += file[1].__sizeof__()
-        return total
-
     def get_file_size(self, response):
         """
         get file size
@@ -266,9 +262,8 @@ class ScamperSpider:
 
     def concat_file_obj(self, filename):
         files = self.file_mapper[filename]["file"]
-        files_sizes = self.total_files_size(files)
-        if files_sizes == self.file_mapper[filename]["size"]:
-
+        files_count = len(files)
+        if files_count == cpu_count or files_count == 1:
             objs = sorted(files, key=lambda x: int(x[0].split("-")[-1]) if x[0] else -1)
             path = self.file_mapper[filename]["path"]
             with open(path, "wb") as fd:
@@ -276,6 +271,7 @@ class ScamperSpider:
                     fd.write(obj_[1].getvalue())
                     df.loc[df.filename == filename, "now_size"] = int(obj_[0].split("-")[-1]) if obj_[0] else obj_[
                         1].__sizeof__()
+                    obj_[1].close()
             df.loc[df.filename == filename, "over"] = 1
             self.logger.info(msg=f"save file in path {path}")
 
