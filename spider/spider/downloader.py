@@ -294,21 +294,24 @@ class ScamperSpider:
     def to_sql(self):
         global df
         while True:
-            # if not df.equals(self.record) and not df.empty and queue.empty():
             if self.all_over == cpu_count:
-                fail_files = self.record.loc[self.record.over == 0, "filename"].values
-                fail_index = df[df["filename"].isin(fail_files)].index
-                df = df.drop(fail_index, axis=0)
-                df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
-                cur = conn.cursor()
-                for k, v in self.update_info.items():
-                    sql = f"UPDATE {table_name} SET over={v} WHERE filename='{k}';"
-                    cur.execute(sql)
-                conn.commit()
-                cur.close()
-                conn.close()
+                self.to_sql_handler()
                 break
             time.sleep(10)
+
+    def to_sql_handler(self):
+        global df
+        fail_files = self.record.loc[self.record.over == 0, "filename"].values
+        fail_index = df[df["filename"].isin(fail_files)].index
+        df = df.drop(fail_index, axis=0)
+        df.to_sql(name=table_name, con=engine, index=False, if_exists="append")
+        cur = conn.cursor()
+        for k, v in self.update_info.items():
+            sql = f"UPDATE {table_name} SET over={v} WHERE filename='{k}';"
+            cur.execute(sql)
+        conn.commit()
+        cur.close()
+        conn.close()
 
     def main(self):
         """
@@ -332,7 +335,7 @@ def main(base_url=None, base_path=None):
     parser.add_argument("-ul", dest="hdfs_url", help="hdfs config hdfs url", type=str, default=None)
     parser.add_argument("-us", dest="hdfs_user", help="hdfs config hdfs user", type=str, default=None)
     args = parser.parse_args()
-    # s = ScamperSpider(base_path=args.save_path, log_path=args.log_path, base_url=args.link, start_time=args.start_time,
-    #                   end_time=args.end_time, hdfs_url=args.hdfs_url, hdfs_user=args.hdfs_user)
-    s = ScamperSpider(base_url=base_url, base_path=base_path)
+    s = ScamperSpider(base_path=args.save_path, log_path=args.log_path, base_url=args.link, start_time=args.start_time,
+                      end_time=args.end_time, hdfs_url=args.hdfs_url, hdfs_user=args.hdfs_user)
+    # s = ScamperSpider(base_url=base_url, base_path=base_path)
     s.main()
