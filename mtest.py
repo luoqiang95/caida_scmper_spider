@@ -10,11 +10,7 @@ b = pd.DataFrame({
     "b": 3,
     "c": 4
 }, index=[1])
-# c = pd.merge(a, b, on=["a"])
-c = a.append(b)
+i = a.loc[a.a == 1, "c"].values
+c = a[a["c"].isin(i)].index
 print(c)
-# print("=" * 5)
-# print(c.drop_duplicates(subset=["a"], keep="first"))
-index = c.loc[c.b == 3].index
-print(index)
-print(c.drop(index, axis=0))
+print(a.drop(c,axis=0))
